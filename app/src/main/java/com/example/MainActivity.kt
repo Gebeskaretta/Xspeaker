@@ -128,7 +128,7 @@ class MainActivity : ComponentActivity() {
         bluetoothManager = BluetoothTvManager(this)
         acousticEngine = AudioAcousticEngine(this)
         audioServer = LocalAudioStreamServer(this).apply {
-            startServer(8080)
+            startServer()
         }
 
         setContent {
@@ -420,7 +420,7 @@ fun CleanXspeakerScreen(
                                                 fontWeight = FontWeight.Black
                                             )
                                             Text(
-                                                text = "Telefonunuzun tarayıcısından (Chrome/Safari) bu adresi açıp şarkınızı seçin; anında TV'den çalar!",
+                                                text = "Telefonunuzun tarayıcısından (Chrome/Safari) bu adresi açın. (Not: Telefon ve TV AYNI Wi-Fi ağına bağlı olmalıdır).",
                                                 color = Color.LightGray,
                                                 fontSize = 11.sp
                                             )

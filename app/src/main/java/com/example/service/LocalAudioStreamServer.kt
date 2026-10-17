@@ -5,7 +5,9 @@ import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.media.MediaPlayer
+import android.net.wifi.WifiManager
 import android.os.Build
+import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -17,6 +19,7 @@ import java.io.File
 import java.io.FileOutputStream
 import java.io.InputStreamReader
 import java.net.Inet4Address
+import java.net.InetAddress
 import java.net.NetworkInterface
 import java.net.ServerSocket
 import java.net.Socket
@@ -38,21 +41,38 @@ class LocalAudioStreamServer(private val context: Context) {
     private val _currentTrackTitle = MutableStateFlow<String?>(null)
     val currentTrackTitle: StateFlow<String?> = _currentTrackTitle.asStateFlow()
 
-    fun startServer(port: Int = 8080) {
+    private val _connectedClientsCount = MutableStateFlow(0)
+    val connectedClientsCount: StateFlow<Int> = _connectedClientsCount.asStateFlow()
+
+    fun startServer() {
         if (isRunning) return
         isRunning = true
 
-        val ip = getIpAddress()
-        _serverUrl.value = "http://$ip:$port"
-
         scope.launch {
+            val ip = getBestIpAddress()
+            val candidatePorts = listOf(8080, 8888, 8090, 8000, 9090)
+            var boundPort = 8080
+
+            for (port in candidatePorts) {
+                try {
+                    serverSocket = ServerSocket(port, 50, InetAddress.getByName("0.0.0.0"))
+                    boundPort = port
+                    break
+                } catch (e: Exception) {
+                    Log.w("XspeakerServer", "Port $port in use, trying next...")
+                }
+            }
+
+            _serverUrl.value = "http://$ip:$boundPort"
+            Log.i("XspeakerServer", "Server listening at ${_serverUrl.value}")
+
             try {
-                serverSocket = ServerSocket(port)
                 while (isRunning) {
                     val clientSocket = serverSocket?.accept() ?: break
                     handleClient(clientSocket)
                 }
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                Log.e("XspeakerServer", "Server accept error: ${e.message}")
             }
         }
     }
@@ -69,25 +89,27 @@ class LocalAudioStreamServer(private val context: Context) {
     private fun handleClient(socket: Socket) {
         scope.launch {
             try {
-                socket.soTimeout = 10000
+                socket.soTimeout = 15000
                 val input = socket.getInputStream()
+                val output = socket.getOutputStream()
                 val reader = BufferedReader(InputStreamReader(input))
                 val requestLine = reader.readLine() ?: return@launch
 
                 if (requestLine.startsWith("GET /ping")) {
-                    // Heartbeat ping from phone to keep connection alive
-                    val response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\nConnection: keep-alive\r\n\r\nOK"
-                    socket.getOutputStream().write(response.toByteArray(Charsets.UTF_8))
+                    val resp = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\nOK"
+                    output.write(resp.toByteArray(Charsets.UTF_8))
                 } else if (requestLine.startsWith("GET / ")) {
-                    // Mobile Web UI
                     val html = getMobileWebHtml()
+                    val bytes = html.toByteArray(Charsets.UTF_8)
                     val response = "HTTP/1.1 200 OK\r\n" +
                             "Content-Type: text/html; charset=UTF-8\r\n" +
-                            "Content-Length: ${html.toByteArray(Charsets.UTF_8).size}\r\n" +
-                            "Connection: close\r\n\r\n" + html
-                    socket.getOutputStream().write(response.toByteArray(Charsets.UTF_8))
+                            "Content-Length: ${bytes.size}\r\n" +
+                            "Access-Control-Allow-Origin: *\r\n" +
+                            "Connection: close\r\n\r\n"
+                    output.write(response.toByteArray(Charsets.UTF_8))
+                    output.write(bytes)
+                    _connectedClientsCount.value = _connectedClientsCount.value + 1
                 } else if (requestLine.startsWith("POST /upload")) {
-                    // Receive uploaded audio file from phone
                     var contentLength = 0
                     var line: String?
                     while (reader.readLine().also { line = it } != null && line!!.isNotEmpty()) {
@@ -100,12 +122,11 @@ class LocalAudioStreamServer(private val context: Context) {
                         val tempFile = File(context.cacheDir, "streamed_audio.mp3")
                         val fileOut = FileOutputStream(tempFile)
                         val buffer = ByteArray(16384)
-                        var bytesRead: Int
                         var totalRead = 0
 
                         while (totalRead < contentLength) {
                             val toRead = minOf(buffer.size, contentLength - totalRead)
-                            bytesRead = input.read(buffer, 0, toRead)
+                            val bytesRead = input.read(buffer, 0, toRead)
                             if (bytesRead == -1) break
                             fileOut.write(buffer, 0, bytesRead)
                             totalRead += bytesRead
@@ -113,28 +134,28 @@ class LocalAudioStreamServer(private val context: Context) {
                         fileOut.flush()
                         fileOut.close()
 
-                        // Play audio on TV
                         playAudioFile(tempFile, "Telefonda Çalan Müzik")
                     }
 
-                    val resp = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"status\":\"ok\"}"
-                    socket.getOutputStream().write(resp.toByteArray(Charsets.UTF_8))
+                    val resp = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n{\"status\":\"ok\"}"
+                    output.write(resp.toByteArray(Charsets.UTF_8))
                 } else if (requestLine.startsWith("POST /pause")) {
                     mediaPlayer?.pause()
                     _isStreaming.value = false
-                    val resp = "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n"
-                    socket.getOutputStream().write(resp.toByteArray(Charsets.UTF_8))
+                    val resp = "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n"
+                    output.write(resp.toByteArray(Charsets.UTF_8))
                 } else if (requestLine.startsWith("POST /play")) {
                     mediaPlayer?.start()
                     _isStreaming.value = true
-                    val resp = "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n"
-                    socket.getOutputStream().write(resp.toByteArray(Charsets.UTF_8))
+                    val resp = "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n"
+                    output.write(resp.toByteArray(Charsets.UTF_8))
                 } else {
                     val resp = "HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n"
-                    socket.getOutputStream().write(resp.toByteArray(Charsets.UTF_8))
+                    output.write(resp.toByteArray(Charsets.UTF_8))
                 }
+                output.flush()
                 socket.close()
-            } catch (_: Exception) {
+            } catch (e: Exception) {
                 try { socket.close() } catch (_: Exception) {}
             }
         }
@@ -172,7 +193,7 @@ class LocalAudioStreamServer(private val context: Context) {
                             .build()
                     )
                     setDataSource(file.absolutePath)
-                    isLooping = true // Keep audio loop so playback doesn't stop
+                    isLooping = true
                     prepare()
                     start()
                 }
@@ -197,16 +218,43 @@ class LocalAudioStreamServer(private val context: Context) {
         }
     }
 
-    private fun getIpAddress(): String {
+    private fun getBestIpAddress(): String {
+        // 1. Try WifiManager
         try {
-            val interfaces = NetworkInterface.getNetworkInterfaces()
-            while (interfaces.hasMoreElements()) {
-                val networkInterface = interfaces.nextElement()
-                val addresses = networkInterface.inetAddresses
-                while (addresses.hasMoreElements()) {
-                    val address = addresses.nextElement()
-                    if (!address.isLoopbackAddress && address is Inet4Address) {
-                        return address.hostAddress ?: "192.168.1.100"
+            val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+            val ipInt = wifiManager?.connectionInfo?.ipAddress ?: 0
+            if (ipInt != 0) {
+                val ip = String.format(
+                    "%d.%d.%d.%d",
+                    ipInt and 0xff,
+                    ipInt shr 8 and 0xff,
+                    ipInt shr 16 and 0xff,
+                    ipInt shr 24 and 0xff
+                )
+                if (ip != "0.0.0.0") return ip
+            }
+        } catch (_: Exception) {}
+
+        // 2. Scan network interfaces prioritizing wlan0 / eth0
+        try {
+            val interfaces = NetworkInterface.getNetworkInterfaces()?.toList() ?: emptyList()
+            val sorted = interfaces.sortedByDescending { iface ->
+                when {
+                    iface.name.startsWith("wlan", ignoreCase = true) -> 3
+                    iface.name.startsWith("eth", ignoreCase = true) -> 2
+                    else -> 0
+                }
+            }
+
+            for (iface in sorted) {
+                if (iface.isUp && !iface.isLoopback) {
+                    for (addr in iface.inetAddresses) {
+                        if (addr is Inet4Address && !addr.isLoopbackAddress) {
+                            val host = addr.hostAddress
+                            if (host != null && !host.startsWith("127.") && !host.startsWith("169.254.")) {
+                                return host
+                            }
+                        }
                     }
                 }
             }
@@ -220,12 +268,13 @@ class LocalAudioStreamServer(private val context: Context) {
             <html lang="tr">
             <head>
                 <meta charset="UTF-8">
-                <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                <title>Xspeaker • TV Ses Aktarımı</title>
+                <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+                <title>Xspeaker TV • Ses Aktarımı</title>
                 <style>
+                    * { box-sizing: border-box; }
                     body {
                         margin: 0;
-                        padding: 24px;
+                        padding: 20px;
                         background: #090B10;
                         color: #FFF;
                         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -233,49 +282,57 @@ class LocalAudioStreamServer(private val context: Context) {
                         flex-direction: column;
                         align-items: center;
                         justify-content: center;
-                        min-height: 90vh;
+                        min-height: 100vh;
                         text-align: center;
                     }
                     .card {
-                        background: #171B2B;
-                        border: 1px solid #00E5FF;
-                        border-radius: 20px;
+                        background: #171B2D;
+                        border: 2px solid #00E5FF;
+                        border-radius: 24px;
                         padding: 24px;
-                        width: 90%;
+                        width: 100%;
                         max-width: 420px;
-                        box-shadow: 0 10px 30px rgba(0,229,255,0.15);
+                        box-shadow: 0 12px 40px rgba(0,229,255,0.2);
                     }
-                    h1 { color: #00E5FF; margin: 0 0 8px 0; font-size: 24px; }
-                    p { color: #A0ABCB; font-size: 14px; margin-bottom: 24px; }
+                    h1 { color: #00E5FF; margin: 0 0 8px 0; font-size: 26px; }
+                    p { color: #A0ABCB; font-size: 14px; margin-bottom: 24px; line-height: 1.4; }
                     .btn {
                         display: block;
                         width: 100%;
                         background: #00E5FF;
                         color: #090B10;
                         border: none;
-                        border-radius: 14px;
-                        padding: 16px;
-                        font-size: 16px;
-                        font-weight: bold;
+                        border-radius: 16px;
+                        padding: 18px;
+                        font-size: 17px;
+                        font-weight: 800;
                         cursor: pointer;
                         margin-bottom: 16px;
-                        box-sizing: border-box;
+                        box-shadow: 0 4px 15px rgba(0,229,255,0.3);
                     }
                     .file-input { display: none; }
-                    .status { color: #00E676; font-weight: bold; margin-top: 16px; font-size: 14px; }
-                    .heartbeat { font-size: 11px; color: #6B7694; margin-top: 12px; }
+                    .status {
+                        color: #00E676;
+                        font-weight: bold;
+                        margin-top: 18px;
+                        font-size: 15px;
+                        padding: 10px;
+                        background: rgba(0,230,118,0.1);
+                        border-radius: 12px;
+                    }
+                    .hb { font-size: 12px; color: #8F9BB3; margin-top: 14px; }
                 </style>
             </head>
             <body>
                 <div class="card">
                     <h1>🔊 Xspeaker TV</h1>
-                    <p>Telefonunuzdaki müziği veya sesi seçin, doğrudan televizyonun ses sisteminden kesintisiz çalsın!</p>
+                    <p>Telefonunuzdaki müziği veya sesi seçin, doğrudan televizyonunuzun ses sisteminden çalsın!</p>
                     
                     <input type="file" id="audioPicker" class="file-input" accept="audio/*">
-                    <button class="btn" onclick="document.getElementById('audioPicker').click()">🎵 Telefonda Müzik / Ses Seç ve TV'ye Aktar</button>
+                    <button class="btn" onclick="document.getElementById('audioPicker').click()">🎵 Telefonda Müzik Seç ve TV'ye Aktar</button>
                     
-                    <div id="status" class="status">TV'ye bağlı • Çalmaya hazır</div>
-                    <div id="hb" class="heartbeat">Sürekli bağlantı aktif • TV açık</div>
+                    <div id="status" class="status">✅ TV'ye bağlandı • Çalmaya hazır</div>
+                    <div id="hb" class="hb">Canlı bağlantı aktif</div>
                 </div>
 
                 <script>
@@ -283,32 +340,29 @@ class LocalAudioStreamServer(private val context: Context) {
                     const status = document.getElementById('status');
                     const hb = document.getElementById('hb');
 
-                    // Request Screen Wake Lock so phone does not sleep or drop connection
                     if ('wakeLock' in navigator) {
-                        try {
-                            navigator.wakeLock.request('screen');
-                        } catch(e) {}
+                        try { navigator.wakeLock.request('screen'); } catch(e) {}
                     }
 
-                    // Keep-alive heartbeat ping every 2.5 seconds
+                    // Keep-alive ping
                     setInterval(async () => {
                         try {
                             const res = await fetch('/ping');
                             if (res.ok) {
-                                hb.innerText = "Bağlantı aktif (Canlı) • " + new Date().toLocaleTimeString();
+                                hb.innerText = "🟢 TV ile canlı bağlantı aktif (" + new Date().toLocaleTimeString() + ")";
                                 hb.style.color = "#00E676";
                             }
-                        } catch (e) {
-                            hb.innerText = "Yeniden bağlanıyor...";
+                        } catch(e) {
+                            hb.innerText = "🟡 Bağlantı kontrol ediliyor...";
                             hb.style.color = "#FFAB00";
                         }
-                    }, 2500);
+                    }, 3000);
 
                     picker.addEventListener('change', async () => {
                         const file = picker.files[0];
                         if (!file) return;
 
-                        status.innerText = "Televizyona aktarılıyor ve çalınıyor...";
+                        status.innerText = "⏳ Televizyona aktarılıyor (" + file.name + ")...";
                         status.style.color = "#FFAB00";
 
                         try {
@@ -317,14 +371,14 @@ class LocalAudioStreamServer(private val context: Context) {
                                 body: file
                             });
                             if (res.ok) {
-                                status.innerText = "Şu anda TV Hoparlöründe kesintisiz çalıyor: " + file.name;
+                                status.innerText = "▶️ Şu anda TV'den çalıyor: " + file.name;
                                 status.style.color = "#00E676";
                             } else {
-                                status.innerText = "Aktarım hatası!";
+                                status.innerText = "❌ Aktarım hatası oluştu!";
                                 status.style.color = "#FF1744";
                             }
                         } catch (e) {
-                            status.innerText = "Bağlantı hatası: " + e.message;
+                            status.innerText = "❌ Bağlantı hatası: " + e.message;
                             status.style.color = "#FF1744";
                         }
                     });
