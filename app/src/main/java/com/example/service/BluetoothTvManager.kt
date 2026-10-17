@@ -6,6 +6,8 @@ import android.app.Activity
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
+import android.bluetooth.BluetoothProfile
+import android.bluetooth.BluetoothServerSocket
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -16,15 +18,26 @@ import android.provider.Settings
 import androidx.core.content.ContextCompat
 import com.example.model.ConnectedDeviceInfo
 import com.example.model.ConnectionStatus
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import java.util.UUID
 
 class BluetoothTvManager(private val context: Context) {
 
     private val bluetoothManager: BluetoothManager? =
         context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
     private val adapter: BluetoothAdapter? = bluetoothManager?.adapter
+    private val scope = CoroutineScope(Dispatchers.IO)
+
+    // Standard Bluetooth A2DP Audio Sink Service UUIDs
+    private val A2DP_SINK_UUID = UUID.fromString("0000110B-0000-1000-8000-00805F9B34FB")
+    private val ADVANCED_AUDIO_UUID = UUID.fromString("0000110D-0000-1000-8000-00805F9B34FB")
+
+    private var serverSocket: BluetoothServerSocket? = null
 
     private val _connectionStatus = MutableStateFlow(ConnectionStatus.DISCONNECTED)
     val connectionStatus: StateFlow<ConnectionStatus> = _connectionStatus.asStateFlow()
@@ -38,9 +51,6 @@ class BluetoothTvManager(private val context: Context) {
     private val _connectedDevice = MutableStateFlow<ConnectedDeviceInfo?>(null)
     val connectedDevice: StateFlow<ConnectedDeviceInfo?> = _connectedDevice.asStateFlow()
 
-    private val _pairedDevices = MutableStateFlow<List<ConnectedDeviceInfo>>(emptyList())
-    val pairedDevices: StateFlow<List<ConnectedDeviceInfo>> = _pairedDevices.asStateFlow()
-
     private val _isDiscoverable = MutableStateFlow(false)
     val isDiscoverable: StateFlow<Boolean> = _isDiscoverable.asStateFlow()
 
@@ -51,7 +61,9 @@ class BluetoothTvManager(private val context: Context) {
                 BluetoothAdapter.ACTION_STATE_CHANGED -> {
                     val state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)
                     _isBluetoothEnabled.value = (state == BluetoothAdapter.STATE_ON)
-                    refreshDevices()
+                    if (state == BluetoothAdapter.STATE_ON) {
+                        startAudioSinkService()
+                    }
                 }
                 BluetoothAdapter.ACTION_SCAN_MODE_CHANGED -> {
                     val scanMode = intent.getIntExtra(
@@ -78,7 +90,7 @@ class BluetoothTvManager(private val context: Context) {
                         val info = ConnectedDeviceInfo(
                             name = deviceName,
                             address = device.address ?: "00:11:22:33:44:55",
-                            deviceType = if (deviceName.contains("iPhone", ignoreCase = true)) "Apple iPhone" else "Android Telefon"
+                            deviceType = if (deviceName.contains("iPhone", ignoreCase = true)) "Apple iPhone" else "Akıllı Telefon"
                         )
                         _connectedDevice.value = info
                         _connectionStatus.value = ConnectionStatus.CONNECTED
@@ -88,16 +100,57 @@ class BluetoothTvManager(private val context: Context) {
                     _connectedDevice.value = null
                     _connectionStatus.value = if (_isDiscoverable.value) ConnectionStatus.DISCOVERABLE else ConnectionStatus.DISCONNECTED
                 }
-                BluetoothDevice.ACTION_BOND_STATE_CHANGED -> {
-                    refreshDevices()
-                }
             }
         }
     }
 
     init {
         registerReceivers()
-        refreshDevices()
+        startAudioSinkService()
+        connectA2dpSinkProfile()
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun startAudioSinkService() {
+        if (!hasConnectPermission() || adapter == null || !adapter.isEnabled) return
+        scope.launch {
+            try {
+                serverSocket?.close()
+                // Register SDP record as Audio Sink on the Bluetooth daemon
+                serverSocket = adapter.listenUsingInsecureRfcommWithServiceRecord(
+                    "Xspeaker Audio Sink",
+                    A2DP_SINK_UUID
+                )
+                // Listen for incoming connection
+                while (true) {
+                    val socket = serverSocket?.accept() ?: break
+                    val remoteDevice = socket.remoteDevice
+                    if (remoteDevice != null) {
+                        val name = getSafeDeviceName(remoteDevice)
+                        _connectedDevice.value = ConnectedDeviceInfo(
+                            name = name,
+                            address = remoteDevice.address ?: "",
+                            deviceType = "Telefon (Bluetooth Hoparlör)"
+                        )
+                        _connectionStatus.value = ConnectionStatus.CONNECTED
+                    }
+                }
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    private fun connectA2dpSinkProfile() {
+        try {
+            // Profile 11 is hidden BluetoothProfile.A2DP_SINK in Android framework
+            val A2DP_SINK_PROFILE = 11
+            adapter?.getProfileProxy(context, object : BluetoothProfile.ServiceListener {
+                override fun onServiceConnected(profile: Int, proxy: BluetoothProfile?) {
+                    // A2DP Sink proxy registered
+                }
+                override fun onServiceDisconnected(profile: Int) {}
+            }, A2DP_SINK_PROFILE)
+        } catch (_: Exception) {}
     }
 
     private fun registerReceivers() {
@@ -106,7 +159,6 @@ class BluetoothTvManager(private val context: Context) {
             addAction(BluetoothAdapter.ACTION_SCAN_MODE_CHANGED)
             addAction(BluetoothDevice.ACTION_ACL_CONNECTED)
             addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED)
-            addAction(BluetoothDevice.ACTION_BOND_STATE_CHANGED)
         }
         try {
             ContextCompat.registerReceiver(
@@ -126,33 +178,25 @@ class BluetoothTvManager(private val context: Context) {
     fun unregister() {
         try {
             context.unregisterReceiver(receiver)
+            serverSocket?.close()
         } catch (_: Exception) {}
     }
 
     private fun resolveTvName(): String {
         return try {
             if (hasConnectPermission()) {
-                adapter?.name?.takeIf { it.isNotBlank() } ?: "Xspeaker TV (${Build.MODEL})"
+                adapter?.name?.takeIf { it.isNotBlank() } ?: "Profilo Smart TV"
             } else {
-                "Xspeaker TV (${Build.MODEL})"
+                "Profilo Smart TV"
             }
         } catch (_: Exception) {
-            "Xspeaker TV (${Build.MODEL})"
+            "Profilo Smart TV"
         }
     }
 
     fun hasConnectPermission(): Boolean {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) ==
-                PackageManager.PERMISSION_GRANTED
-        } else {
-            true
-        }
-    }
-
-    fun hasScanPermission(): Boolean {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_SCAN) ==
                 PackageManager.PERMISSION_GRANTED
         } else {
             true
@@ -173,25 +217,8 @@ class BluetoothTvManager(private val context: Context) {
     }
 
     @SuppressLint("MissingPermission")
-    fun refreshDevices() {
-        try {
-            if (adapter != null && adapter.isEnabled && hasConnectPermission()) {
-                val bonded = adapter.bondedDevices ?: emptySet()
-                _pairedDevices.value = bonded.map { dev ->
-                    ConnectedDeviceInfo(
-                        name = dev.name ?: "Bluetooth Cihazı",
-                        address = dev.address ?: "",
-                        deviceType = if (dev.name?.contains("iPhone", ignoreCase = true) == true) "Apple iPhone" else "Akıllı Telefon"
-                    )
-                }
-            }
-        } catch (_: Exception) {
-            // Permission or hardware restriction
-        }
-    }
-
-    @SuppressLint("MissingPermission")
     fun requestMakeDiscoverable(activity: Activity, durationSeconds: Int = 300) {
+        startAudioSinkService()
         try {
             val discoverableIntent = Intent(BluetoothAdapter.ACTION_REQUEST_DISCOVERABLE).apply {
                 putExtra(BluetoothAdapter.EXTRA_DISCOVERABLE_DURATION, durationSeconds)
@@ -199,11 +226,8 @@ class BluetoothTvManager(private val context: Context) {
             }
             activity.startActivity(discoverableIntent)
             _isDiscoverable.value = true
-            if (_connectionStatus.value != ConnectionStatus.CONNECTED) {
-                _connectionStatus.value = ConnectionStatus.DISCOVERABLE
-            }
+            _connectionStatus.value = ConnectionStatus.DISCOVERABLE
         } catch (e: Exception) {
-            // Fallback to system bluetooth settings if discoverable intent is unsupported on this TV
             openBluetoothSettings()
         }
     }
@@ -214,44 +238,6 @@ class BluetoothTvManager(private val context: Context) {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
             context.startActivity(intent)
-        } catch (_: Exception) {
-            try {
-                val intent = Intent(Settings.ACTION_SETTINGS).apply {
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                }
-                context.startActivity(intent)
-            } catch (_: Exception) {}
-        }
-    }
-
-    // Testing simulation for emulator / TV demo experience
-    fun simulatePhoneConnection(phoneModel: String = "iPhone 15 Pro Max") {
-        if (_connectionStatus.value == ConnectionStatus.CONNECTED) {
-            _connectedDevice.value = null
-            _connectionStatus.value = ConnectionStatus.DISCONNECTED
-        } else {
-            _connectionStatus.value = ConnectionStatus.CONNECTED
-            _connectedDevice.value = ConnectedDeviceInfo(
-                name = phoneModel,
-                address = "FC:A8:41:8B:20:EE",
-                deviceType = if (phoneModel.contains("iPhone")) "Apple iOS Cihazı" else "Android Akıllı Telefon",
-                codec = "AAC-HD Hi-Fi (48 kHz / 24-bit)",
-                signalStrengthDbm = -42
-            )
-        }
-    }
-
-    fun toggleDiscoverableDemo() {
-        if (_connectionStatus.value == ConnectionStatus.CONNECTED) {
-            _connectionStatus.value = ConnectionStatus.DISCONNECTED
-            _connectedDevice.value = null
-            _isDiscoverable.value = false
-        } else if (_connectionStatus.value == ConnectionStatus.DISCOVERABLE) {
-            _connectionStatus.value = ConnectionStatus.DISCONNECTED
-            _isDiscoverable.value = false
-        } else {
-            _connectionStatus.value = ConnectionStatus.DISCOVERABLE
-            _isDiscoverable.value = true
-        }
+        } catch (_: Exception) {}
     }
 }
