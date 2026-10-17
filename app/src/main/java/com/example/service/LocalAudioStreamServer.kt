@@ -2,9 +2,10 @@ package com.example.service
 
 import android.content.Context
 import android.media.AudioAttributes
+import android.media.AudioFocusRequest
+import android.media.AudioManager
 import android.media.MediaPlayer
-import android.net.wifi.WifiManager
-import android.text.format.Formatter
+import android.os.Build
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -12,7 +13,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import java.io.BufferedReader
-import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.io.InputStreamReader
@@ -27,6 +27,7 @@ class LocalAudioStreamServer(private val context: Context) {
     private var serverSocket: ServerSocket? = null
     private var isRunning = false
     private var mediaPlayer: MediaPlayer? = null
+    private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
 
     private val _serverUrl = MutableStateFlow("http://...")
     val serverUrl: StateFlow<String> = _serverUrl.asStateFlow()
@@ -68,12 +69,17 @@ class LocalAudioStreamServer(private val context: Context) {
     private fun handleClient(socket: Socket) {
         scope.launch {
             try {
+                socket.soTimeout = 10000
                 val input = socket.getInputStream()
                 val reader = BufferedReader(InputStreamReader(input))
                 val requestLine = reader.readLine() ?: return@launch
 
-                if (requestLine.startsWith("GET / ")) {
-                    // Send Mobile Web UI for audio streaming
+                if (requestLine.startsWith("GET /ping")) {
+                    // Heartbeat ping from phone to keep connection alive
+                    val response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\nConnection: keep-alive\r\n\r\nOK"
+                    socket.getOutputStream().write(response.toByteArray(Charsets.UTF_8))
+                } else if (requestLine.startsWith("GET / ")) {
+                    // Mobile Web UI
                     val html = getMobileWebHtml()
                     val response = "HTTP/1.1 200 OK\r\n" +
                             "Content-Type: text/html; charset=UTF-8\r\n" +
@@ -81,7 +87,7 @@ class LocalAudioStreamServer(private val context: Context) {
                             "Connection: close\r\n\r\n" + html
                     socket.getOutputStream().write(response.toByteArray(Charsets.UTF_8))
                 } else if (requestLine.startsWith("POST /upload")) {
-                    // Receive uploaded audio file from phone and play on TV
+                    // Receive uploaded audio file from phone
                     var contentLength = 0
                     var line: String?
                     while (reader.readLine().also { line = it } != null && line!!.isNotEmpty()) {
@@ -93,7 +99,7 @@ class LocalAudioStreamServer(private val context: Context) {
                     if (contentLength > 0) {
                         val tempFile = File(context.cacheDir, "streamed_audio.mp3")
                         val fileOut = FileOutputStream(tempFile)
-                        val buffer = ByteArray(8192)
+                        val buffer = ByteArray(16384)
                         var bytesRead: Int
                         var totalRead = 0
 
@@ -134,9 +140,29 @@ class LocalAudioStreamServer(private val context: Context) {
         }
     }
 
+    private fun requestTvAudioFocus() {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val focusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+                    .setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_MEDIA)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                            .build()
+                    )
+                    .build()
+                audioManager.requestAudioFocus(focusRequest)
+            } else {
+                @Suppress("DEPRECATION")
+                audioManager.requestAudioFocus(null, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN)
+            }
+        } catch (_: Exception) {}
+    }
+
     private fun playAudioFile(file: File, title: String) {
         scope.launch(Dispatchers.Main) {
             try {
+                requestTvAudioFocus()
                 mediaPlayer?.release()
                 mediaPlayer = MediaPlayer().apply {
                     setAudioAttributes(
@@ -146,11 +172,9 @@ class LocalAudioStreamServer(private val context: Context) {
                             .build()
                     )
                     setDataSource(file.absolutePath)
+                    isLooping = true // Keep audio loop so playback doesn't stop
                     prepare()
                     start()
-                    setOnCompletionListener {
-                        _isStreaming.value = false
-                    }
                 }
                 _isStreaming.value = true
                 _currentTrackTitle.value = title
@@ -166,6 +190,7 @@ class LocalAudioStreamServer(private val context: Context) {
                 it.pause()
                 _isStreaming.value = false
             } else {
+                requestTvAudioFocus()
                 it.start()
                 _isStreaming.value = true
             }
@@ -217,7 +242,7 @@ class LocalAudioStreamServer(private val context: Context) {
                         border-radius: 20px;
                         padding: 24px;
                         width: 90%;
-                        max-width: 400px;
+                        max-width: 420px;
                         box-shadow: 0 10px 30px rgba(0,229,255,0.15);
                     }
                     h1 { color: #00E5FF; margin: 0 0 8px 0; font-size: 24px; }
@@ -238,28 +263,52 @@ class LocalAudioStreamServer(private val context: Context) {
                     }
                     .file-input { display: none; }
                     .status { color: #00E676; font-weight: bold; margin-top: 16px; font-size: 14px; }
+                    .heartbeat { font-size: 11px; color: #6B7694; margin-top: 12px; }
                 </style>
             </head>
             <body>
                 <div class="card">
                     <h1>🔊 Xspeaker TV</h1>
-                    <p>Telefonunuzdaki müziği veya sesi seçin, doğrudan televizyonun ses sisteminden çalsın!</p>
+                    <p>Telefonunuzdaki müziği veya sesi seçin, doğrudan televizyonun ses sisteminden kesintisiz çalsın!</p>
                     
                     <input type="file" id="audioPicker" class="file-input" accept="audio/*">
                     <button class="btn" onclick="document.getElementById('audioPicker').click()">🎵 Telefonda Müzik / Ses Seç ve TV'ye Aktar</button>
                     
                     <div id="status" class="status">TV'ye bağlı • Çalmaya hazır</div>
+                    <div id="hb" class="heartbeat">Sürekli bağlantı aktif • TV açık</div>
                 </div>
 
                 <script>
                     const picker = document.getElementById('audioPicker');
                     const status = document.getElementById('status');
+                    const hb = document.getElementById('hb');
+
+                    // Request Screen Wake Lock so phone does not sleep or drop connection
+                    if ('wakeLock' in navigator) {
+                        try {
+                            navigator.wakeLock.request('screen');
+                        } catch(e) {}
+                    }
+
+                    // Keep-alive heartbeat ping every 2.5 seconds
+                    setInterval(async () => {
+                        try {
+                            const res = await fetch('/ping');
+                            if (res.ok) {
+                                hb.innerText = "Bağlantı aktif (Canlı) • " + new Date().toLocaleTimeString();
+                                hb.style.color = "#00E676";
+                            }
+                        } catch (e) {
+                            hb.innerText = "Yeniden bağlanıyor...";
+                            hb.style.color = "#FFAB00";
+                        }
+                    }, 2500);
 
                     picker.addEventListener('change', async () => {
                         const file = picker.files[0];
                         if (!file) return;
 
-                        status.innerText = "Televizyona yükleniyor ve çalınıyor...";
+                        status.innerText = "Televizyona aktarılıyor ve çalınıyor...";
                         status.style.color = "#FFAB00";
 
                         try {
@@ -268,7 +317,7 @@ class LocalAudioStreamServer(private val context: Context) {
                                 body: file
                             });
                             if (res.ok) {
-                                status.innerText = "Şu anda TV Hoparlöründe çalıyor: " + file.name;
+                                status.innerText = "Şu anda TV Hoparlöründe kesintisiz çalıyor: " + file.name;
                                 status.style.color = "#00E676";
                             } else {
                                 status.innerText = "Aktarım hatası!";

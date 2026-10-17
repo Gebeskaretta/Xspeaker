@@ -8,6 +8,7 @@ import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
 import android.bluetooth.BluetoothServerSocket
+import android.bluetooth.BluetoothSocket
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -20,6 +21,8 @@ import com.example.model.ConnectedDeviceInfo
 import com.example.model.ConnectionStatus
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -35,9 +38,11 @@ class BluetoothTvManager(private val context: Context) {
 
     // Standard Bluetooth A2DP Audio Sink Service UUIDs
     private val A2DP_SINK_UUID = UUID.fromString("0000110B-0000-1000-8000-00805F9B34FB")
-    private val ADVANCED_AUDIO_UUID = UUID.fromString("0000110D-0000-1000-8000-00805F9B34FB")
 
     private var serverSocket: BluetoothServerSocket? = null
+    private var activeClientSocket: BluetoothSocket? = null
+    private var clientReaderJob: Job? = null
+    private var disconnectDebounceJob: Job? = null
 
     private val _connectionStatus = MutableStateFlow(ConnectionStatus.DISCONNECTED)
     val connectionStatus: StateFlow<ConnectionStatus> = _connectionStatus.asStateFlow()
@@ -74,11 +79,10 @@ class BluetoothTvManager(private val context: Context) {
                     _isDiscoverable.value = discoverable
                     if (discoverable && _connectionStatus.value != ConnectionStatus.CONNECTED) {
                         _connectionStatus.value = ConnectionStatus.DISCOVERABLE
-                    } else if (!discoverable && _connectionStatus.value == ConnectionStatus.DISCOVERABLE) {
-                        _connectionStatus.value = ConnectionStatus.DISCONNECTED
                     }
                 }
                 BluetoothDevice.ACTION_ACL_CONNECTED -> {
+                    disconnectDebounceJob?.cancel()
                     val device = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                         intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
                     } else {
@@ -87,18 +91,24 @@ class BluetoothTvManager(private val context: Context) {
                     }
                     if (device != null) {
                         val deviceName = getSafeDeviceName(device)
-                        val info = ConnectedDeviceInfo(
+                        _connectedDevice.value = ConnectedDeviceInfo(
                             name = deviceName,
-                            address = device.address ?: "00:11:22:33:44:55",
+                            address = device.address ?: "",
                             deviceType = if (deviceName.contains("iPhone", ignoreCase = true)) "Apple iPhone" else "Akıllı Telefon"
                         )
-                        _connectedDevice.value = info
                         _connectionStatus.value = ConnectionStatus.CONNECTED
                     }
                 }
                 BluetoothDevice.ACTION_ACL_DISCONNECTED -> {
-                    _connectedDevice.value = null
-                    _connectionStatus.value = if (_isDiscoverable.value) ConnectionStatus.DISCOVERABLE else ConnectionStatus.DISCONNECTED
+                    // Debounce disconnect so brief packet losses or profile handshakes don't drop the connection
+                    disconnectDebounceJob?.cancel()
+                    disconnectDebounceJob = scope.launch {
+                        delay(2500)
+                        if (activeClientSocket == null || activeClientSocket?.isConnected != true) {
+                            _connectedDevice.value = null
+                            _connectionStatus.value = if (_isDiscoverable.value) ConnectionStatus.DISCOVERABLE else ConnectionStatus.DISCONNECTED
+                        }
+                    }
                 }
             }
         }
@@ -124,6 +134,9 @@ class BluetoothTvManager(private val context: Context) {
                 // Listen for incoming connection
                 while (true) {
                     val socket = serverSocket?.accept() ?: break
+                    activeClientSocket?.close()
+                    activeClientSocket = socket
+
                     val remoteDevice = socket.remoteDevice
                     if (remoteDevice != null) {
                         val name = getSafeDeviceName(remoteDevice)
@@ -134,6 +147,24 @@ class BluetoothTvManager(private val context: Context) {
                         )
                         _connectionStatus.value = ConnectionStatus.CONNECTED
                     }
+
+                    // Keep socket active with a persistent reader loop to prevent timeouts
+                    clientReaderJob?.cancel()
+                    clientReaderJob = scope.launch {
+                        try {
+                            val inStream = socket.inputStream
+                            val buf = ByteArray(2048)
+                            while (socket.isConnected) {
+                                val bytes = inStream.read(buf)
+                                if (bytes == -1) break
+                            }
+                        } catch (_: Exception) {
+                        } finally {
+                            if (activeClientSocket == socket) {
+                                activeClientSocket = null
+                            }
+                        }
+                    }
                 }
             } catch (_: Exception) {
             }
@@ -142,12 +173,9 @@ class BluetoothTvManager(private val context: Context) {
 
     private fun connectA2dpSinkProfile() {
         try {
-            // Profile 11 is hidden BluetoothProfile.A2DP_SINK in Android framework
             val A2DP_SINK_PROFILE = 11
             adapter?.getProfileProxy(context, object : BluetoothProfile.ServiceListener {
-                override fun onServiceConnected(profile: Int, proxy: BluetoothProfile?) {
-                    // A2DP Sink proxy registered
-                }
+                override fun onServiceConnected(profile: Int, proxy: BluetoothProfile?) {}
                 override fun onServiceDisconnected(profile: Int) {}
             }, A2DP_SINK_PROFILE)
         } catch (_: Exception) {}
@@ -178,6 +206,8 @@ class BluetoothTvManager(private val context: Context) {
     fun unregister() {
         try {
             context.unregisterReceiver(receiver)
+            clientReaderJob?.cancel()
+            activeClientSocket?.close()
             serverSocket?.close()
         } catch (_: Exception) {}
     }

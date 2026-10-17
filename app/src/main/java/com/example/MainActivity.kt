@@ -93,15 +93,37 @@ import com.example.ui.theme.StatusGreen
 import com.example.ui.theme.StatusRed
 import com.example.ui.theme.SurfaceCard
 
+import android.content.Context
+import android.net.wifi.WifiManager
+import android.os.PowerManager
+import android.view.WindowManager
+
 class MainActivity : ComponentActivity() {
 
     private lateinit var bluetoothManager: BluetoothTvManager
     private lateinit var acousticEngine: AudioAcousticEngine
     private lateinit var audioServer: LocalAudioStreamServer
+    private var wakeLock: PowerManager.WakeLock? = null
+    private var wifiLock: WifiManager.WifiLock? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+
+        // Keep TV awake & keep network / bluetooth hardware at high performance
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+
+        try {
+            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+            wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Xspeaker:WakeLock")
+            wakeLock?.acquire(12 * 60 * 60 * 1000L)
+        } catch (_: Exception) {}
+
+        try {
+            val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+            wifiLock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "Xspeaker:WifiLock")
+            wifiLock?.acquire()
+        } catch (_: Exception) {}
 
         bluetoothManager = BluetoothTvManager(this)
         acousticEngine = AudioAcousticEngine(this)
@@ -148,6 +170,10 @@ class MainActivity : ComponentActivity() {
         super.onDestroy()
         bluetoothManager.unregister()
         audioServer.stopServer()
+        try {
+            if (wakeLock?.isHeld == true) wakeLock?.release()
+            if (wifiLock?.isHeld == true) wifiLock?.release()
+        } catch (_: Exception) {}
     }
 }
 
