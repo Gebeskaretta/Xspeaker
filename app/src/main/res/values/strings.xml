@@ -1,0 +1,14 @@
+<resources>
+    <string name="app_name">Xspeaker</string>
+    <string name="tagline">TV Bluetooth Hoparlör Alıcısı</string>
+    <string name="sub_tagline">Telefonunuzu TV\'ye bağlayın, müziği TV hoparlörlerinizden dinleyin</string>
+    
+    <!-- Status -->
+    <string name="status_listening">Yayına Hazır • Eşleşme Bekleniyor</string>
+    <string name="status_connected">Bağlandı • Ses TV Hoparlöründe</string>
+    <string name="status_bluetooth_off">Bluetooth Kapalı</string>
+    <string name="make_discoverable">TV\'yi Görünür Yap (Eşleşme Modu)</string>
+    <string name="bluetooth_settings">Bluetooth Ayarlarını Aç</string>
+    <string name="ambient_mode">Ekran Koruyucu / Karartma</string>
+    <string name="sound_test">TV Hoparlör Test Sesi</string>
+</resources>

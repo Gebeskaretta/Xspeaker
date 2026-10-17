@@ -1,0 +1,6 @@
+{
+  "name": "Xspeaker",
+  "description": "Televizyonunuzu yüksek kaliteli bir kablosuz Bluetooth hoparlöre dönüştürün. Telefonunuzu TV'ye bağlayarak müzik ve seslerinizi doğrudan televizyon ses sisteminden dinleyin.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
