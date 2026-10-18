@@ -471,15 +471,15 @@ fun CleanXspeakerScreen(
                                                     fontWeight = FontWeight.Bold
                                                 )
                                                 Text(
-                                                    text = "Telefonda \"Profilo Smart TV\"yi Unutun",
+                                                    text = "Profilo TV Bluetooth Donanımı Hakkında:",
                                                     color = Color.White,
-                                                    fontSize = 13.sp,
+                                                    fontSize = 12.sp,
                                                     fontWeight = FontWeight.SemiBold
                                                 )
                                                 Text(
-                                                    text = "Telefonunuzda önceki eşleşmeyi silip aşağıdaki butona basarak tekrar eşleştirin.",
+                                                    text = "TV üreticileri Bluetooth alıcısını (A2DP Sink) devre dışı bıraktığı için telefon 'Kaydedildi' deyip ses aktarımı yapamayabilir. En garantili aktarım için yukarıdaki 1. Yöntemi kullanın.",
                                                     color = Color.LightGray,
-                                                    fontSize = 11.sp
+                                                    fontSize = 10.sp
                                                 )
                                             }
                                         }
