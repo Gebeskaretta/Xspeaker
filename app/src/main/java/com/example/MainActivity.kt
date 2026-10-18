@@ -1,10 +1,14 @@
 package com.example
 
 import android.Manifest
+import android.content.Context
 import android.content.pm.PackageManager
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
 import android.view.KeyEvent
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -34,17 +38,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Bluetooth
-import androidx.compose.material.icons.filled.BluetoothSearching
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.MusicNote
-import androidx.compose.material.icons.filled.Pause
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.QrCode2
+import androidx.compose.material.icons.filled.Headphones
+import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Speaker
-import androidx.compose.material.icons.filled.VolumeDown
-import androidx.compose.material.icons.filled.VolumeMute
 import androidx.compose.material.icons.filled.VolumeOff
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.filled.Wifi
@@ -65,9 +62,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -93,11 +87,6 @@ import com.example.ui.theme.StatusGreen
 import com.example.ui.theme.StatusRed
 import com.example.ui.theme.SurfaceCard
 
-import android.content.Context
-import android.net.wifi.WifiManager
-import android.os.PowerManager
-import android.view.WindowManager
-
 class MainActivity : ComponentActivity() {
 
     private lateinit var bluetoothManager: BluetoothTvManager
@@ -110,7 +99,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
-        // Keep TV awake & keep network / bluetooth hardware at high performance
+        // Keep TV display and hardware active
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         try {
@@ -133,7 +122,7 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             MyApplicationTheme {
-                CleanXspeakerScreen(
+                XspeakerScreen(
                     activity = this,
                     bluetoothManager = bluetoothManager,
                     acousticEngine = acousticEngine,
@@ -178,7 +167,7 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun CleanXspeakerScreen(
+fun XspeakerScreen(
     activity: ComponentActivity,
     bluetoothManager: BluetoothTvManager,
     acousticEngine: AudioAcousticEngine,
@@ -198,10 +187,14 @@ fun CleanXspeakerScreen(
     val isStreaming by audioServer.isStreaming.collectAsState()
     val currentTrackTitle by audioServer.currentTrackTitle.collectAsState()
 
-    // Permission launcher for Android 12+
+    val isAudioActive = isStreaming || connectionStatus == ConnectionStatus.CONNECTED
+
+    // Request Bluetooth permissions
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
-    ) { /* Permissions handled */ }
+    ) {
+        bluetoothManager.enableHeadphoneMode()
+    }
 
     LaunchedEffect(Unit) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -224,7 +217,7 @@ fun CleanXspeakerScreen(
     Scaffold(
         modifier = Modifier
             .fillMaxSize()
-            .testTag("screen_clean_xspeaker"),
+            .testTag("screen_xspeaker"),
         containerColor = BackgroundDark
     ) { innerPadding ->
         Box(
@@ -236,7 +229,7 @@ fun CleanXspeakerScreen(
                 val isLandscape = maxWidth > 650.dp
 
                 if (isLandscape) {
-                    // Landscape TV 2-Pane Layout (Clear & Focused)
+                    // Landscape TV 2-Pane Layout
                     Row(
                         modifier = Modifier
                             .fillMaxSize()
@@ -244,17 +237,17 @@ fun CleanXspeakerScreen(
                         horizontalArrangement = Arrangement.spacedBy(24.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        // Left: High Quality Speaker Cover Photo
+                        // Left: Speaker Cover Photo
                         Box(
                             modifier = Modifier
                                 .weight(1f)
                                 .fillMaxHeight()
-                                .clip(RoundedCornerShape(28.dp))
-                                .border(1.5.dp, CyanAccent.copy(alpha = 0.5f), RoundedCornerShape(28.dp)),
+                                .clip(RoundedCornerShape(24.dp))
+                                .border(1.5.dp, CyanAccent.copy(alpha = 0.5f), RoundedCornerShape(24.dp)),
                             contentAlignment = Alignment.Center
                         ) {
                             val pulseScale by animateFloatAsState(
-                                targetValue = if (isStreaming || connectionStatus == ConnectionStatus.CONNECTED) 1f + (bassPulse * 0.06f) else 1f,
+                                targetValue = if (isAudioActive) 1f + (bassPulse * 0.05f) else 1f,
                                 animationSpec = tween(durationMillis = 80),
                                 label = "speakerPulse"
                             )
@@ -268,7 +261,6 @@ fun CleanXspeakerScreen(
                                 contentScale = ContentScale.Crop
                             )
 
-                            // Gradient overlay
                             Box(
                                 modifier = Modifier
                                     .fillMaxSize()
@@ -282,7 +274,6 @@ fun CleanXspeakerScreen(
                                     )
                             )
 
-                            // Bottom title over speaker photo
                             Column(
                                 modifier = Modifier
                                     .align(Alignment.BottomStart)
@@ -304,33 +295,33 @@ fun CleanXspeakerScreen(
                                     )
                                 }
                                 Text(
-                                    text = "TV Bluetooth & Kablosuz Hoparlör Alıcısı",
+                                    text = "TV Bluetooth Kulaklık & Hoparlör Alıcısı",
                                     color = Color.White.copy(alpha = 0.8f),
                                     fontSize = 13.sp
                                 )
                             }
                         }
 
-                        // Right: Direct Audio Connection Controls
+                        // Right: Connection Panels & Controls
                         Column(
                             modifier = Modifier
                                 .weight(1.3f)
                                 .fillMaxHeight(),
                             verticalArrangement = Arrangement.SpaceBetween
                         ) {
-                            // Top Active Audio Status Card
+                            // Status & Test Chime Card
                             Surface(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(20.dp))
                                     .border(
                                         1.dp,
-                                        if (isStreaming || connectionStatus == ConnectionStatus.CONNECTED) StatusGreen else CyanAccent,
+                                        if (isAudioActive) StatusGreen else CyanAccent,
                                         RoundedCornerShape(20.dp)
                                     ),
                                 color = SurfaceCard
                             ) {
-                                Column(modifier = Modifier.padding(18.dp)) {
+                                Column(modifier = Modifier.padding(16.dp)) {
                                     Row(
                                         verticalAlignment = Alignment.CenterVertically,
                                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -341,104 +332,61 @@ fun CleanXspeakerScreen(
                                                 modifier = Modifier
                                                     .size(12.dp)
                                                     .background(
-                                                        if (isStreaming || connectionStatus == ConnectionStatus.CONNECTED) StatusGreen else CyanAccent,
+                                                        if (isAudioActive) StatusGreen else CyanAccent,
                                                         CircleShape
                                                     )
                                             )
-                                            Spacer(modifier = Modifier.width(8.dp))
-                                            Text(
-                                                text = if (isStreaming) "SES TELEVİZYONDAN ÇALIYOR" else if (connectionStatus == ConnectionStatus.CONNECTED) "TELEFON BAĞLANDI" else "BAĞLANTIYA HAZIR",
-                                                color = Color.White,
-                                                fontSize = 13.sp,
-                                                fontWeight = FontWeight.Bold
-                                            )
+                                            Spacer(modifier = Modifier.width(10.dp))
+                                            Column {
+                                                Text(
+                                                    text = when {
+                                                        isStreaming -> "SES AKTARILIYOR (TV HOPARLÖRÜ)"
+                                                        connectionStatus == ConnectionStatus.CONNECTED -> "BAĞLANDI: ${connectedDevice?.name ?: "Telefon"}"
+                                                        else -> "KULAKLIK MODU AKTİF • EŞLEŞMEYE HAZIR"
+                                                    },
+                                                    color = Color.White,
+                                                    fontSize = 13.sp,
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                                Text(
+                                                    text = "Cihaz Adı: $tvDeviceName",
+                                                    color = CyanAccent,
+                                                    fontSize = 12.sp
+                                                )
+                                            }
                                         }
 
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                            OutlinedButton(
-                                                onClick = { audioServer.playAcousticChime() },
-                                                modifier = Modifier.height(32.dp),
-                                                shape = RoundedCornerShape(8.dp)
-                                            ) {
-                                                Text("🔔 TV Ses Testi", fontSize = 11.sp, color = CyanAccent)
-                                            }
-                                            Spacer(modifier = Modifier.width(8.dp))
-                                            Text(
-                                                text = tvDeviceName,
-                                                color = CyanAccent,
-                                                fontSize = 12.sp,
-                                                fontWeight = FontWeight.SemiBold
+                                        OutlinedButton(
+                                            onClick = { audioServer.playAcousticChime() },
+                                            modifier = Modifier.height(36.dp),
+                                            shape = RoundedCornerShape(8.dp)
+                                        ) {
+                                            Icon(
+                                                Icons.Default.NotificationsActive,
+                                                contentDescription = null,
+                                                tint = CyanAccent,
+                                                modifier = Modifier.size(16.dp)
                                             )
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text("Hoparlör Test Sesi", fontSize = 12.sp, color = CyanAccent)
                                         }
                                     }
 
-                                    if (isStreaming) {
-                                        Spacer(modifier = Modifier.height(8.dp))
+                                    if (isStreaming && currentTrackTitle != null) {
+                                        Spacer(modifier = Modifier.height(6.dp))
                                         Text(
-                                            text = "🎵 ${currentTrackTitle ?: "Telefon Ses Akışı Aktif"}",
+                                            text = "🎵 $currentTrackTitle",
                                             color = StatusGreen,
-                                            fontSize = 14.sp,
-                                            fontWeight = FontWeight.Bold
+                                            fontSize = 13.sp,
+                                            fontWeight = FontWeight.SemiBold
                                         )
                                     }
                                 }
                             }
 
-                            // Connection Methods (Clear & Direct)
+                            // Connection Options
                             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                                // Method 1: Instant Web Streamer (100% Guaranteed to work on every TV & Phone!)
-                                Surface(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clip(RoundedCornerShape(18.dp))
-                                        .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(18.dp)),
-                                    color = SurfaceCard
-                                ) {
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(16.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Box(
-                                            modifier = Modifier
-                                                .size(46.dp)
-                                                .background(CyanAccent.copy(alpha = 0.2f), CircleShape),
-                                            contentAlignment = Alignment.Center
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Default.Wifi,
-                                                contentDescription = null,
-                                                tint = CyanAccent,
-                                                modifier = Modifier.size(26.dp)
-                                            )
-                                        }
-
-                                        Spacer(modifier = Modifier.width(14.dp))
-
-                                        Column(modifier = Modifier.weight(1f)) {
-                                            Text(
-                                                text = "1. YÖNTEM: TELEFON TARAYICISINDAN AÇIN",
-                                                color = CyanAccent,
-                                                fontSize = 11.sp,
-                                                fontWeight = FontWeight.Bold
-                                            )
-                                            Text(
-                                                text = serverUrl,
-                                                color = Color.White,
-                                                fontSize = 18.sp,
-                                                fontWeight = FontWeight.Black
-                                            )
-                                            Text(
-                                                text = "Telefonunuzun tarayıcısından (Chrome/Safari) bu adresi açın. (Not: Telefon ve TV AYNI Wi-Fi ağına bağlı olmalıdır).",
-                                                color = Color.LightGray,
-                                                fontSize = 11.sp
-                                            )
-                                        }
-                                    }
-                                }
-
-                                // Method 2: Bluetooth Speaker Mode
+                                // Bluetooth Headphone Mode Card
                                 Surface(
                                     modifier = Modifier
                                         .fillMaxWidth()
@@ -460,13 +408,13 @@ fun CleanXspeakerScreen(
                                             Box(
                                                 modifier = Modifier
                                                     .size(46.dp)
-                                                    .background(Color(0xFF7C4DFF).copy(alpha = 0.2f), CircleShape),
+                                                    .background(CyanAccent.copy(alpha = 0.2f), CircleShape),
                                                 contentAlignment = Alignment.Center
                                             ) {
                                                 Icon(
-                                                    imageVector = Icons.Default.Bluetooth,
+                                                    imageVector = Icons.Default.Headphones,
                                                     contentDescription = null,
-                                                    tint = Color(0xFF7C4DFF),
+                                                    tint = CyanAccent,
                                                     modifier = Modifier.size(26.dp)
                                                 )
                                             }
@@ -475,21 +423,21 @@ fun CleanXspeakerScreen(
 
                                             Column {
                                                 Text(
-                                                    text = "2. YÖNTEM: BLUETOOTH İLE EŞLEŞTİRME",
-                                                    color = Color(0xFF7C4DFF),
+                                                    text = "BLUETOOTH KULAKLIK BAĞLANTISI",
+                                                    color = CyanAccent,
                                                     fontSize = 11.sp,
                                                     fontWeight = FontWeight.Bold
                                                 )
                                                 Text(
-                                                    text = "Profilo TV Bluetooth Donanımı Hakkında:",
+                                                    text = "Xspeaker Kulaklık",
                                                     color = Color.White,
-                                                    fontSize = 12.sp,
-                                                    fontWeight = FontWeight.SemiBold
+                                                    fontSize = 16.sp,
+                                                    fontWeight = FontWeight.Bold
                                                 )
                                                 Text(
-                                                    text = "TV üreticileri Bluetooth alıcısını (A2DP Sink) devre dışı bıraktığı için telefon 'Kaydedildi' deyip ses aktarımı yapamayabilir. En garantili aktarım için yukarıdaki 1. Yöntemi kullanın.",
+                                                    text = "Telefonunuzun Bluetooth menüsünden bu cihaza bağlanın.",
                                                     color = Color.LightGray,
-                                                    fontSize = 10.sp
+                                                    fontSize = 12.sp
                                                 )
                                             }
                                         }
@@ -506,14 +454,66 @@ fun CleanXspeakerScreen(
                                             shape = RoundedCornerShape(12.dp)
                                         ) {
                                             Icon(
-                                                imageVector = Icons.Default.BluetoothSearching,
+                                                imageVector = Icons.Default.Headphones,
                                                 contentDescription = null,
                                                 modifier = Modifier.size(16.dp)
                                             )
                                             Spacer(modifier = Modifier.width(6.dp))
                                             Text(
-                                                text = "Eşleşme Modunu Aç",
+                                                text = "Kulaklık Olarak Eşleş",
                                                 fontWeight = FontWeight.Bold,
+                                                fontSize = 12.sp
+                                            )
+                                        }
+                                    }
+                                }
+
+                                // Wi-Fi Stream Card
+                                Surface(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(18.dp))
+                                        .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(18.dp)),
+                                    color = SurfaceCard
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(16.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(46.dp)
+                                                .background(Color(0xFF7C4DFF).copy(alpha = 0.2f), CircleShape),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Wifi,
+                                                contentDescription = null,
+                                                tint = Color(0xFF7C4DFF),
+                                                modifier = Modifier.size(26.dp)
+                                            )
+                                        }
+
+                                        Spacer(modifier = Modifier.width(14.dp))
+
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = "Wİ-Fİ İLE SES AKTARIMI",
+                                                color = Color(0xFF7C4DFF),
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                            Text(
+                                                text = serverUrl,
+                                                color = Color.White,
+                                                fontSize = 18.sp,
+                                                fontWeight = FontWeight.Black
+                                            )
+                                            Text(
+                                                text = "Telefon tarayıcınızdan bu adresi açarak da ses aktarabilirsiniz.",
+                                                color = Color.LightGray,
                                                 fontSize = 12.sp
                                             )
                                         }
@@ -521,7 +521,7 @@ fun CleanXspeakerScreen(
                                 }
                             }
 
-                            // TV Volume Bar
+                            // TV Volume Slider
                             Surface(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -537,7 +537,7 @@ fun CleanXspeakerScreen(
                                 ) {
                                     IconButton(
                                         onClick = { acousticEngine.toggleMute() },
-                                        modifier = Modifier.testTag("btn_clean_mute")
+                                        modifier = Modifier.testTag("btn_mute")
                                     ) {
                                         Icon(
                                             imageVector = if (isMuted) Icons.Default.VolumeOff else Icons.Default.VolumeUp,
@@ -561,7 +561,7 @@ fun CleanXspeakerScreen(
                                         modifier = Modifier
                                             .weight(1f)
                                             .padding(horizontal = 8.dp)
-                                            .testTag("slider_clean_vol"),
+                                            .testTag("slider_vol"),
                                         colors = SliderDefaults.colors(
                                             thumbColor = CyanAccent,
                                             activeTrackColor = CyanAccent
@@ -589,7 +589,7 @@ fun CleanXspeakerScreen(
                         }
                     }
                 } else {
-                    // Portrait Mode (Mobile / Phone preview)
+                    // Mobile / Portrait view
                     Column(
                         modifier = Modifier
                             .fillMaxSize()
@@ -597,7 +597,6 @@ fun CleanXspeakerScreen(
                             .verticalScroll(rememberScrollState()),
                         verticalArrangement = Arrangement.spacedBy(16.dp)
                     ) {
-                        // Speaker Cover Photo
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -621,16 +620,22 @@ fun CleanXspeakerScreen(
                                         )
                                     )
                             )
-                            Text(
-                                text = "Xspeaker • TV Hoparlör Alıcısı",
-                                color = Color.White,
-                                fontSize = 16.sp,
-                                fontWeight = FontWeight.Bold,
-                                modifier = Modifier.padding(16.dp)
-                            )
+                            Column(modifier = Modifier.padding(16.dp)) {
+                                Text(
+                                    text = "Xspeaker",
+                                    color = Color.White,
+                                    fontSize = 20.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = "TV Bluetooth Kulaklık Alıcısı",
+                                    color = Color.White.copy(alpha = 0.8f),
+                                    fontSize = 13.sp
+                                )
+                            }
                         }
 
-                        // Method 1: Direct link
+                        // Bluetooth Headphone Card
                         Surface(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -639,8 +644,45 @@ fun CleanXspeakerScreen(
                         ) {
                             Column(modifier = Modifier.padding(16.dp)) {
                                 Text(
-                                    text = "1. YÖNTEM: TARAYICIDAN AÇIN",
+                                    text = "BLUETOOTH KULAKLIK BAĞLANTISI",
                                     color = CyanAccent,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = "Xspeaker Kulaklık",
+                                    color = Color.White,
+                                    fontSize = 16.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = "Telefonunuzun Bluetooth menüsünden bu cihaza bağlanın.",
+                                    color = Color.LightGray,
+                                    fontSize = 12.sp
+                                )
+                                Spacer(modifier = Modifier.height(12.dp))
+                                Button(
+                                    onClick = { bluetoothManager.requestMakeDiscoverable(activity) },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = ButtonDefaults.buttonColors(containerColor = CyanAccent, contentColor = BackgroundDark)
+                                ) {
+                                    Text("Kulaklık Olarak Eşleş", fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+
+                        // Wi-Fi Stream Card
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(16.dp)),
+                            color = SurfaceCard
+                        ) {
+                            Column(modifier = Modifier.padding(16.dp)) {
+                                Text(
+                                    text = "Wİ-Fİ İLE SES AKTARIMI",
+                                    color = Color(0xFF7C4DFF),
                                     fontSize = 11.sp,
                                     fontWeight = FontWeight.Bold
                                 )
@@ -651,14 +693,14 @@ fun CleanXspeakerScreen(
                                     fontWeight = FontWeight.Black
                                 )
                                 Text(
-                                    text = "Telefonunuzdan bu adrese girip istediğiniz müziği seçin, anında TV'den çalsın!",
+                                    text = "Telefon tarayıcınızdan bu adrese girerek ses aktarabilirsiniz.",
                                     color = Color.LightGray,
-                                    fontSize = 11.sp
+                                    fontSize = 12.sp
                                 )
                             }
                         }
 
-                        // Method 2: Bluetooth
+                        // Sound test & Volume
                         Surface(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -666,48 +708,20 @@ fun CleanXspeakerScreen(
                             color = SurfaceCard
                         ) {
                             Column(modifier = Modifier.padding(16.dp)) {
-                                Text(
-                                    text = "2. YÖNTEM: BLUETOOTH İLE BAĞLANTI",
-                                    color = Color(0xFF7C4DFF),
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Text(
-                                    text = "Telefonda Profilo Smart TV cihazını 'Unut' deyin, ardından butona basıp yeniden eşleştirin.",
-                                    color = Color.LightGray,
-                                    fontSize = 12.sp
-                                )
-                                Spacer(modifier = Modifier.height(10.dp))
                                 Button(
-                                    onClick = { bluetoothManager.requestMakeDiscoverable(activity) },
+                                    onClick = { audioServer.playAcousticChime() },
                                     modifier = Modifier.fillMaxWidth(),
-                                    colors = ButtonDefaults.buttonColors(containerColor = CyanAccent, contentColor = BackgroundDark)
+                                    colors = ButtonDefaults.buttonColors(containerColor = SurfaceCard, contentColor = CyanAccent)
                                 ) {
-                                    Text("Eşleşme Modunu Aç", fontWeight = FontWeight.Bold)
+                                    Text("🔊 TV Hoparlör Ses Testi")
                                 }
-                            }
-                        }
-
-                        // Volume Control
-                        Surface(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(16.dp)),
-                            color = SurfaceCard
-                        ) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(12.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
+                                Spacer(modifier = Modifier.height(8.dp))
                                 Text("TV Sesi: %$volumePercent", color = Color.White, fontSize = 12.sp)
                                 Slider(
                                     value = volumePercent.toFloat(),
                                     onValueChange = { acousticEngine.setTvVolume(it.toInt()) },
                                     valueRange = 0f..100f,
-                                    modifier = Modifier.weight(1f).padding(horizontal = 8.dp)
+                                    modifier = Modifier.fillMaxWidth()
                                 )
                             }
                         }

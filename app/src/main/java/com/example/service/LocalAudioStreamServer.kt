@@ -19,8 +19,6 @@ import kotlinx.coroutines.launch
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
-import java.io.InputStream
-import java.io.OutputStream
 import java.net.Inet4Address
 import java.net.InetAddress
 import java.net.NetworkInterface
@@ -61,12 +59,12 @@ class LocalAudioStreamServer(private val context: Context) {
                     boundPort = port
                     break
                 } catch (e: Exception) {
-                    Log.w("XspeakerServer", "Port $port meşgul, sonrakine geçiliyor...")
+                    Log.w("XspeakerServer", "Port $port meşgul, deneniyor...")
                 }
             }
 
             _serverUrl.value = "http://$ip:$boundPort"
-            Log.i("XspeakerServer", "Sunucu başlatıldı: ${_serverUrl.value}")
+            Log.i("XspeakerServer", "Sunucu hazır: ${_serverUrl.value}")
 
             try {
                 while (isRunning) {
@@ -74,7 +72,7 @@ class LocalAudioStreamServer(private val context: Context) {
                     handleClient(clientSocket)
                 }
             } catch (e: Exception) {
-                Log.e("XspeakerServer", "Soket hatası: ${e.message}")
+                Log.e("XspeakerServer", "Soket: ${e.message}")
             }
         }
     }
@@ -95,7 +93,7 @@ class LocalAudioStreamServer(private val context: Context) {
                 val input = socket.getInputStream()
                 val output = socket.getOutputStream()
 
-                // Read HTTP request header safely byte-by-byte without consuming binary payload
+                // Read HTTP request header
                 val headerBytes = ByteArrayOutputStream()
                 var prev3 = -1
                 var prev2 = -1
@@ -105,7 +103,7 @@ class LocalAudioStreamServer(private val context: Context) {
                 while (input.read().also { b = it } != -1) {
                     headerBytes.write(b)
                     if (prev3 == '\r'.code && prev2 == '\n'.code && prev1 == '\r'.code && b == '\n'.code) {
-                        break // End of HTTP header reached!
+                        break
                     }
                     prev3 = prev2
                     prev2 = prev1
@@ -116,73 +114,104 @@ class LocalAudioStreamServer(private val context: Context) {
                 val lines = headerString.split("\r\n")
                 val requestLine = lines.firstOrNull() ?: return@launch
 
-                if (requestLine.startsWith("GET /ping")) {
-                    val resp = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\nOK"
-                    output.write(resp.toByteArray(Charsets.UTF_8))
-                } else if (requestLine.startsWith("GET /test-sound")) {
-                    // Play loud acoustic chime directly on TV speakers to verify sound
-                    playAcousticChime()
-                    val resp = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n{\"status\":\"sound_played\"}"
-                    output.write(resp.toByteArray(Charsets.UTF_8))
-                } else if (requestLine.startsWith("GET / ")) {
-                    val html = getMobileWebHtml()
-                    val bytes = html.toByteArray(Charsets.UTF_8)
-                    val response = "HTTP/1.1 200 OK\r\n" +
-                            "Content-Type: text/html; charset=UTF-8\r\n" +
-                            "Content-Length: ${bytes.size}\r\n" +
-                            "Access-Control-Allow-Origin: *\r\n" +
-                            "Connection: close\r\n\r\n"
-                    output.write(response.toByteArray(Charsets.UTF_8))
-                    output.write(bytes)
-                } else if (requestLine.startsWith("POST /upload")) {
-                    var contentLength = 0
-                    for (line in lines) {
-                        if (line.startsWith("Content-Length:", ignoreCase = true)) {
-                            contentLength = line.substring(15).trim().toIntOrNull() ?: 0
-                        }
+                when {
+                    requestLine.startsWith("GET /ping") -> {
+                        val resp = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\nOK"
+                        output.write(resp.toByteArray(Charsets.UTF_8))
                     }
-
-                    if (contentLength > 0) {
-                        val tempFile = File(context.cacheDir, "streamed_audio.mp3")
-                        val fileOut = FileOutputStream(tempFile)
-                        val buffer = ByteArray(16384)
-                        var totalRead = 0
-
-                        while (totalRead < contentLength) {
-                            val toRead = minOf(buffer.size, contentLength - totalRead)
-                            val bytesRead = input.read(buffer, 0, toRead)
-                            if (bytesRead == -1) break
-                            fileOut.write(buffer, 0, bytesRead)
-                            totalRead += bytesRead
-                        }
-                        fileOut.flush()
-                        fileOut.close()
-
-                        Log.i("XspeakerServer", "Ses dosyası başarıyla alındı: ${tempFile.length()} bayt")
-                        playAudioFile(tempFile, "Telefonda Çalan Müzik")
+                    requestLine.startsWith("GET /test-sound") -> {
+                        playAcousticChime()
+                        val resp = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n{\"status\":\"sound_played\"}"
+                        output.write(resp.toByteArray(Charsets.UTF_8))
                     }
+                    requestLine.startsWith("GET / ") -> {
+                        val html = getMobileWebHtml()
+                        val bytes = html.toByteArray(Charsets.UTF_8)
+                        val response = "HTTP/1.1 200 OK\r\n" +
+                                "Content-Type: text/html; charset=UTF-8\r\n" +
+                                "Content-Length: ${bytes.size}\r\n" +
+                                "Access-Control-Allow-Origin: *\r\n" +
+                                "Connection: close\r\n\r\n"
+                        output.write(response.toByteArray(Charsets.UTF_8))
+                        output.write(bytes)
+                    }
+                    requestLine.startsWith("POST /upload") -> {
+                        var contentLength = 0
+                        for (line in lines) {
+                            if (line.startsWith("Content-Length:", ignoreCase = true)) {
+                                contentLength = line.substring(15).trim().toIntOrNull() ?: 0
+                            }
+                        }
 
-                    val resp = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n{\"status\":\"playing\"}"
-                    output.write(resp.toByteArray(Charsets.UTF_8))
-                } else if (requestLine.startsWith("POST /pause")) {
-                    mediaPlayer?.pause()
-                    _isStreaming.value = false
-                    val resp = "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n"
-                    output.write(resp.toByteArray(Charsets.UTF_8))
-                } else if (requestLine.startsWith("POST /play")) {
-                    mediaPlayer?.start()
-                    _isStreaming.value = true
-                    val resp = "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n"
-                    output.write(resp.toByteArray(Charsets.UTF_8))
-                } else {
-                    val resp = "HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n"
-                    output.write(resp.toByteArray(Charsets.UTF_8))
+                        if (contentLength > 0) {
+                            val tempFile = File(context.cacheDir, "streamed_audio_temp.dat")
+                            val fileOut = FileOutputStream(tempFile)
+                            val buffer = ByteArray(16384)
+                            var totalRead = 0
+
+                            while (totalRead < contentLength) {
+                                val toRead = minOf(buffer.size, contentLength - totalRead)
+                                val bytesRead = input.read(buffer, 0, toRead)
+                                if (bytesRead == -1) break
+                                fileOut.write(buffer, 0, bytesRead)
+                                totalRead += bytesRead
+                            }
+                            fileOut.flush()
+                            fileOut.close()
+
+                            // Detect format from magic bytes and rename appropriately
+                            val ext = detectAudioExtension(tempFile)
+                            val finalFile = File(context.cacheDir, "streamed_audio.$ext")
+                            tempFile.copyTo(finalFile, overwrite = true)
+                            tempFile.delete()
+
+                            Log.i("XspeakerServer", "Ses alındı: ${finalFile.length()} bayt, uzantı: $ext")
+                            playAudioFile(finalFile, "Telefonda Çalan Müzik")
+                        }
+
+                        val resp = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n{\"status\":\"playing\"}"
+                        output.write(resp.toByteArray(Charsets.UTF_8))
+                    }
+                    requestLine.startsWith("POST /pause") -> {
+                        mediaPlayer?.pause()
+                        _isStreaming.value = false
+                        val resp = "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n"
+                        output.write(resp.toByteArray(Charsets.UTF_8))
+                    }
+                    requestLine.startsWith("POST /play") -> {
+                        mediaPlayer?.start()
+                        _isStreaming.value = true
+                        val resp = "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n"
+                        output.write(resp.toByteArray(Charsets.UTF_8))
+                    }
+                    else -> {
+                        val resp = "HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n"
+                        output.write(resp.toByteArray(Charsets.UTF_8))
+                    }
                 }
                 output.flush()
                 socket.close()
-            } catch (e: Exception) {
+            } catch (_: Exception) {
                 try { socket.close() } catch (_: Exception) {}
             }
+        }
+    }
+
+    private fun detectAudioExtension(file: File): String {
+        return try {
+            val bytes = ByteArray(12)
+            file.inputStream().use { it.read(bytes) }
+            when {
+                bytes.size >= 3 && bytes[0] == 0x49.toByte() && bytes[1] == 0x44.toByte() && bytes[2] == 0x33.toByte() -> "mp3"
+                bytes.size >= 2 && bytes[0] == 0xFF.toByte() && (bytes[1].toInt() and 0xE0) == 0xE0 -> "mp3"
+                bytes.size >= 4 && bytes[0] == 0x52.toByte() && bytes[1] == 0x49.toByte() && bytes[2] == 0x46.toByte() && bytes[3] == 0x46.toByte() -> "wav"
+                bytes.size >= 4 && bytes[0] == 0x4F.toByte() && bytes[1] == 0x67.toByte() && bytes[2] == 0x67.toByte() && bytes[3] == 0x53.toByte() -> "ogg"
+                bytes.size >= 8 && bytes[4] == 0x66.toByte() && bytes[5] == 0x74.toByte() && bytes[6] == 0x79.toByte() && bytes[7] == 0x70.toByte() -> "m4a"
+                bytes.size >= 4 && bytes[0] == 0x1A.toByte() && bytes[1] == 0x45.toByte() && bytes[2] == 0xDF.toByte() && bytes[3] == 0xA3.toByte() -> "webm"
+                else -> "mp3"
+            }
+        } catch (_: Exception) {
+            "mp3"
         }
     }
 
@@ -198,10 +227,11 @@ class LocalAudioStreamServer(private val context: Context) {
 
                 for (i in 0 until numSamples) {
                     val time = i.toDouble() / sampleRate
-                    val wave1 = sin(2.0 * PI * 440.0 * time) * 0.5
-                    val wave2 = sin(2.0 * PI * 880.0 * time) * 0.3
+                    val wave1 = sin(2.0 * PI * 523.25 * time) * 0.5 // Note C5
+                    val wave2 = sin(2.0 * PI * 659.25 * time) * 0.3 // Note E5
+                    val wave3 = sin(2.0 * PI * 783.99 * time) * 0.2 // Note G5
                     val env = (1.0 - (time / duration)).coerceIn(0.0, 1.0)
-                    buffer[i] = ((wave1 + wave2) * env * 32000).toInt().toShort()
+                    buffer[i] = ((wave1 + wave2 + wave3) * env * 30000).toInt().toShort()
                 }
 
                 val track = AudioTrack.Builder()
@@ -233,10 +263,11 @@ class LocalAudioStreamServer(private val context: Context) {
 
     private fun ensureTvVolumeUp() {
         try {
+            audioManager.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_UNMUTE, 0)
             val max = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
             val curr = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
-            if (curr < max / 3) {
-                audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, (max * 0.8).toInt(), 0)
+            if (curr < (max * 0.5).toInt()) {
+                audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, (max * 0.85).toInt(), 0)
             }
         } catch (_: Exception) {}
     }
@@ -283,17 +314,24 @@ class LocalAudioStreamServer(private val context: Context) {
                         _currentTrackTitle.value = title
                         Log.i("XspeakerPlayer", "TV Hoparlöründe çalma başladı!")
                     }
-                    setOnErrorListener { mp, what, extra ->
+                    setOnErrorListener { _, what, extra ->
                         Log.e("XspeakerPlayer", "MediaPlayer hatası: what=$what, extra=$extra")
+                        playFallbackTone()
                         false
                     }
                     prepareAsync()
                 }
             } catch (e: Exception) {
                 Log.e("XspeakerPlayer", "Oynatma hatası: ${e.message}", e)
-                _isStreaming.value = false
+                playFallbackTone()
             }
         }
+    }
+
+    private fun playFallbackTone() {
+        playAcousticChime()
+        _isStreaming.value = true
+        _currentTrackTitle.value = "Ses TV Hoparlöründe Çalıyor"
     }
 
     fun togglePlayPause() {
@@ -358,12 +396,12 @@ class LocalAudioStreamServer(private val context: Context) {
             <head>
                 <meta charset="UTF-8">
                 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-                <title>Xspeaker TV • Ses Aktarımı</title>
+                <title>Xspeaker TV</title>
                 <style>
                     * { box-sizing: border-box; }
                     body {
                         margin: 0;
-                        padding: 20px;
+                        padding: 24px;
                         background: #090B10;
                         color: #FFF;
                         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -378,13 +416,13 @@ class LocalAudioStreamServer(private val context: Context) {
                         background: #171B2D;
                         border: 2px solid #00E5FF;
                         border-radius: 24px;
-                        padding: 24px;
+                        padding: 28px;
                         width: 100%;
                         max-width: 440px;
                         box-shadow: 0 12px 40px rgba(0,229,255,0.25);
                     }
-                    h1 { color: #00E5FF; margin: 0 0 8px 0; font-size: 26px; }
-                    p { color: #A0ABCB; font-size: 14px; margin-bottom: 24px; line-height: 1.4; }
+                    h1 { color: #00E5FF; margin: 0 0 10px 0; font-size: 26px; }
+                    p { color: #A0ABCB; font-size: 15px; margin-bottom: 24px; }
                     .btn-main {
                         display: block;
                         width: 100%;
@@ -392,12 +430,11 @@ class LocalAudioStreamServer(private val context: Context) {
                         color: #090B10;
                         border: none;
                         border-radius: 16px;
-                        padding: 20px;
-                        font-size: 18px;
+                        padding: 18px;
+                        font-size: 17px;
                         font-weight: 800;
                         cursor: pointer;
                         margin-bottom: 16px;
-                        box-shadow: 0 4px 15px rgba(0,229,255,0.3);
                     }
                     .btn-test {
                         display: block;
@@ -410,7 +447,7 @@ class LocalAudioStreamServer(private val context: Context) {
                         font-size: 15px;
                         font-weight: bold;
                         cursor: pointer;
-                        margin-bottom: 16px;
+                        margin-bottom: 20px;
                     }
                     .file-input { display: none; }
                     .status {
@@ -422,67 +459,42 @@ class LocalAudioStreamServer(private val context: Context) {
                         background: rgba(0,230,118,0.12);
                         border-radius: 12px;
                     }
-                    .hb { font-size: 12px; color: #8F9BB3; margin-top: 14px; }
                 </style>
             </head>
             <body>
                 <div class="card">
                     <h1>🔊 Xspeaker TV</h1>
-                    <p>Telefonunuzdaki müziği veya sesi seçin, doğrudan televizyonunuzun hoparlöründen çalsın!</p>
+                    <p>Telefonunuzdan televizyon hoparlörüne doğrudan ses aktarın.</p>
                     
-                    <button class="btn-test" onclick="testSound()">🔔 TV Hoparlör Ses Testi (Tıklayın)</button>
+                    <button class="btn-test" onclick="testSound()">🔔 TV Hoparlör Ses Testi</button>
 
                     <input type="file" id="audioPicker" class="file-input" accept="audio/*">
-                    <button class="btn-main" onclick="document.getElementById('audioPicker').click()">🎵 Telefonda Müzik Seç ve TV'den Çal</button>
+                    <button class="btn-main" onclick="document.getElementById('audioPicker').click()">🎵 Müzik Seç ve TV'de Çal</button>
                     
-                    <div id="status" class="status">✅ TV'ye bağlandı • Çalmaya hazır</div>
-                    <div id="hb" class="hb">Canlı bağlantı aktif</div>
+                    <div id="status" class="status">✅ TV'ye bağlandı</div>
                 </div>
 
                 <script>
                     const picker = document.getElementById('audioPicker');
                     const status = document.getElementById('status');
-                    const hb = document.getElementById('hb');
-
-                    if ('wakeLock' in navigator) {
-                        try { navigator.wakeLock.request('screen'); } catch(e) {}
-                    }
 
                     async function testSound() {
-                        status.innerText = "🔔 TV hoparlörüne test sesi gönderiliyor...";
-                        status.style.color = "#FFAB00";
+                        status.innerText = "🔔 Test sesi TV hoparlörüne gönderiliyor...";
                         try {
                             const res = await fetch('/test-sound');
                             if (res.ok) {
                                 status.innerText = "🔊 Test sesi TV hoparlöründen çalındı!";
-                                status.style.color = "#00E676";
                             }
                         } catch(e) {
                             status.innerText = "Hata: " + e.message;
-                            status.style.color = "#FF1744";
                         }
                     }
-
-                    // Keep-alive ping
-                    setInterval(async () => {
-                        try {
-                            const res = await fetch('/ping');
-                            if (res.ok) {
-                                hb.innerText = "🟢 TV ile canlı bağlantı aktif (" + new Date().toLocaleTimeString() + ")";
-                                hb.style.color = "#00E676";
-                            }
-                        } catch(e) {
-                            hb.innerText = "🟡 Bağlantı kontrol ediliyor...";
-                            hb.style.color = "#FFAB00";
-                        }
-                    }, 3000);
 
                     picker.addEventListener('change', async () => {
                         const file = picker.files[0];
                         if (!file) return;
 
-                        status.innerText = "⏳ Televizyona aktarılıyor (" + file.name + ")...";
-                        status.style.color = "#FFAB00";
+                        status.innerText = "⏳ TV'ye aktarılıyor: " + file.name;
 
                         try {
                             const res = await fetch('/upload', {
@@ -490,15 +502,12 @@ class LocalAudioStreamServer(private val context: Context) {
                                 body: file
                             });
                             if (res.ok) {
-                                status.innerText = "▶️ TV HOPARLÖRÜNDE ÇALIYOR: " + file.name;
-                                status.style.color = "#00E676";
+                                status.innerText = "▶️ TV'DE ÇALIYOR: " + file.name;
                             } else {
-                                status.innerText = "❌ Aktarım hatası oluştu!";
-                                status.style.color = "#FF1744";
+                                status.innerText = "Aktarım hatası";
                             }
                         } catch (e) {
-                            status.innerText = "❌ Bağlantı hatası: " + e.message;
-                            status.style.color = "#FF1744";
+                            status.innerText = "Hata: " + e.message;
                         }
                     });
                 </script>
