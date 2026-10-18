@@ -354,12 +354,22 @@ fun CleanXspeakerScreen(
                                             )
                                         }
 
-                                        Text(
-                                            text = tvDeviceName,
-                                            color = CyanAccent,
-                                            fontSize = 12.sp,
-                                            fontWeight = FontWeight.SemiBold
-                                        )
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            OutlinedButton(
+                                                onClick = { audioServer.playAcousticChime() },
+                                                modifier = Modifier.height(32.dp),
+                                                shape = RoundedCornerShape(8.dp)
+                                            ) {
+                                                Text("🔔 TV Ses Testi", fontSize = 11.sp, color = CyanAccent)
+                                            }
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Text(
+                                                text = tvDeviceName,
+                                                color = CyanAccent,
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.SemiBold
+                                            )
+                                        }
                                     }
 
                                     if (isStreaming) {

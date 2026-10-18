@@ -7,13 +7,19 @@ import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
+import android.bluetooth.le.AdvertiseCallback
+import android.bluetooth.le.AdvertiseData
+import android.bluetooth.le.AdvertiseSettings
+import android.bluetooth.le.BluetoothLeAdvertiser
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.os.Build
+import android.os.ParcelUuid
 import android.provider.Settings
+import android.util.Log
 import androidx.core.content.ContextCompat
 import com.example.model.ConnectedDeviceInfo
 import com.example.model.ConnectionStatus
@@ -25,6 +31,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import java.util.UUID
 
 class BluetoothTvManager(private val context: Context) {
 
@@ -32,6 +39,12 @@ class BluetoothTvManager(private val context: Context) {
         context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
     private val adapter: BluetoothAdapter? = bluetoothManager?.adapter
     private val scope = CoroutineScope(Dispatchers.IO)
+
+    // Standard Audio Sink and Headset UUIDs
+    private val A2DP_SINK_UUID = UUID.fromString("0000110B-0000-1000-8000-00805F9B34FB")
+    private val HEADSET_UUID = UUID.fromString("00001108-0000-1000-8000-00805F9B34FB")
+
+    private var advertiser: BluetoothLeAdvertiser? = null
 
     private val _connectionStatus = MutableStateFlow(ConnectionStatus.DISCONNECTED)
     val connectionStatus: StateFlow<ConnectionStatus> = _connectionStatus.asStateFlow()
@@ -51,6 +64,15 @@ class BluetoothTvManager(private val context: Context) {
     private var connectStabilityJob: Job? = null
     private var disconnectDebounceJob: Job? = null
 
+    private val advertiseCallback = object : AdvertiseCallback() {
+        override fun onStartSuccess(settingsInEffect: AdvertiseSettings?) {
+            Log.i("XspeakerBT", "Hoparlör / Audio Sink BLE yayını başarıyla başladı!")
+        }
+        override fun onStartFailure(errorCode: Int) {
+            Log.w("XspeakerBT", "BLE yayın hatası: $errorCode")
+        }
+    }
+
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             val action = intent?.action ?: return
@@ -58,6 +80,9 @@ class BluetoothTvManager(private val context: Context) {
                 BluetoothAdapter.ACTION_STATE_CHANGED -> {
                     val state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)
                     _isBluetoothEnabled.value = (state == BluetoothAdapter.STATE_ON)
+                    if (state == BluetoothAdapter.STATE_ON) {
+                        configureSpeakerIdentity()
+                    }
                 }
                 BluetoothAdapter.ACTION_SCAN_MODE_CHANGED -> {
                     val scanMode = intent.getIntExtra(
@@ -70,7 +95,6 @@ class BluetoothTvManager(private val context: Context) {
                     }
                 }
                 BluetoothDevice.ACTION_ACL_CONNECTED -> {
-                    // Avoid rapid connect/disconnect spam: only confirm connection if it stays stable for 3 seconds
                     connectStabilityJob?.cancel()
                     disconnectDebounceJob?.cancel()
 
@@ -83,7 +107,7 @@ class BluetoothTvManager(private val context: Context) {
 
                     if (device != null) {
                         connectStabilityJob = scope.launch {
-                            delay(3000) // Ensure connection is stable and not an immediate rejection loop
+                            delay(2000)
                             val deviceName = getSafeDeviceName(device)
                             _connectedDevice.value = ConnectedDeviceInfo(
                                 name = deviceName,
@@ -95,9 +119,7 @@ class BluetoothTvManager(private val context: Context) {
                     }
                 }
                 BluetoothDevice.ACTION_ACL_DISCONNECTED -> {
-                    // Cancel pending connect job if it dropped right away
                     connectStabilityJob?.cancel()
-
                     disconnectDebounceJob?.cancel()
                     disconnectDebounceJob = scope.launch {
                         delay(2000)
@@ -111,7 +133,47 @@ class BluetoothTvManager(private val context: Context) {
 
     init {
         registerReceivers()
+        configureSpeakerIdentity()
         connectA2dpSinkProfile()
+    }
+
+    @SuppressLint("MissingPermission")
+    fun configureSpeakerIdentity() {
+        if (!hasConnectPermission() || adapter == null || !adapter.isEnabled) return
+        try {
+            // Set device name so phone's Bluetooth UI recognizes it as a Speaker / Audio Device!
+            val desiredName = "Xspeaker Hoparlör (TV)"
+            adapter.name = desiredName
+            _tvDeviceName.value = desiredName
+
+            // Start BLE advertising with Audio Sink & Headset UUIDs
+            startSpeakerAdvertising()
+        } catch (_: Exception) {}
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun startSpeakerAdvertising() {
+        try {
+            advertiser = adapter?.bluetoothLeAdvertiser ?: return
+
+            val settings = AdvertiseSettings.Builder()
+                .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
+                .setConnectable(true)
+                .setTimeout(0)
+                .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
+                .build()
+
+            val data = AdvertiseData.Builder()
+                .setIncludeDeviceName(true)
+                .addServiceUuid(ParcelUuid(A2DP_SINK_UUID))
+                .addServiceUuid(ParcelUuid(HEADSET_UUID))
+                .build()
+
+            advertiser?.stopAdvertising(advertiseCallback)
+            advertiser?.startAdvertising(settings, data, advertiseCallback)
+        } catch (e: Exception) {
+            Log.w("XspeakerBT", "Yayın başlatılamadı: ${e.message}")
+        }
     }
 
     private fun connectA2dpSinkProfile() {
@@ -151,18 +213,19 @@ class BluetoothTvManager(private val context: Context) {
             context.unregisterReceiver(receiver)
             connectStabilityJob?.cancel()
             disconnectDebounceJob?.cancel()
+            advertiser?.stopAdvertising(advertiseCallback)
         } catch (_: Exception) {}
     }
 
     private fun resolveTvName(): String {
         return try {
             if (hasConnectPermission()) {
-                adapter?.name?.takeIf { it.isNotBlank() } ?: "Profilo Smart TV"
+                adapter?.name?.takeIf { it.isNotBlank() } ?: "Xspeaker Hoparlör (TV)"
             } else {
-                "Profilo Smart TV"
+                "Xspeaker Hoparlör (TV)"
             }
         } catch (_: Exception) {
-            "Profilo Smart TV"
+            "Xspeaker Hoparlör (TV)"
         }
     }
 
@@ -190,6 +253,7 @@ class BluetoothTvManager(private val context: Context) {
 
     @SuppressLint("MissingPermission")
     fun requestMakeDiscoverable(activity: Activity, durationSeconds: Int = 300) {
+        configureSpeakerIdentity()
         try {
             val discoverableIntent = Intent(BluetoothAdapter.ACTION_REQUEST_DISCOVERABLE).apply {
                 putExtra(BluetoothAdapter.EXTRA_DISCOVERABLE_DURATION, durationSeconds)
